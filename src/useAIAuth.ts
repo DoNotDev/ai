@@ -10,9 +10,9 @@
  * @author AMBROISE PARK Consulting
  */
 
+import * as authModule from '@donotdev/auth';
 import type { AuthUser, FeatureStatus } from '@donotdev/core';
 import { FEATURE_STATUS } from '@donotdev/core';
-import * as authModule from '@donotdev/auth';
 
 const realUseAuth = (authModule as any)?.useAuth;
 

@@ -2,23 +2,28 @@
 // packages/features/ai/src/useAIChat.ts
 
 /**
- * @fileoverview useAIChat - Chat hook wrapping Vercel AI SDK useChat
+ * @fileoverview useAIChat - Chat hook wrapping Vercel AI SDK 7 useChat
  * @description Drop-in chat hook with auth gate, feature consent, and cost tracking.
+ * Exposes framework messages (`AIMessage`, text content) and keeps the input state
+ * that AI SDK 5+ no longer manages. Requests use the framework `AIChatRequest`
+ * shape; token usage comes back as message metadata (`metadata.usage`).
  *
- * @version 0.1.0
+ * @version 0.2.0
  * @since 0.1.0
  * @author AMBROISE PARK Consulting
  */
 
-import { useCallback, useMemo } from 'react';
-
-import { useChat } from 'ai/react';
-import type { Message } from 'ai';
+import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
+import type { UIMessage } from 'ai';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import type {
   AICostResult,
+  AIMessage,
   AIToolCall,
   AIToolDefinition,
+  AIUsage,
 } from '@donotdev/core';
 import {
   FEATURE_STATUS,
@@ -34,6 +39,21 @@ import { useAICost } from './useAICost';
 // =============================================================================
 // Types
 // =============================================================================
+
+/** Chat message as streamed by the AI route: usage arrives as metadata. */
+type ChatUIMessage = UIMessage<{ usage?: AIUsage }>;
+
+/** Text content of a UI message (text parts joined). */
+function textOf(message: ChatUIMessage): string {
+  return message.parts
+    .map((part) => (part.type === 'text' ? part.text : ''))
+    .join('');
+}
+
+/** UI message → framework message (role + text content). */
+function toAIMessage(message: ChatUIMessage): AIMessage {
+  return { id: message.id, role: message.role, content: textOf(message) };
+}
 
 export interface UseAIChatConfig {
   /** API endpoint for chat (default: '/api/ai/chat') */
@@ -63,8 +83,8 @@ export interface UseAIChatConfig {
 }
 
 export interface UseAIChatReturn {
-  /** Conversation messages */
-  messages: Message[];
+  /** Conversation messages (text content) */
+  messages: AIMessage[];
   /** Send a message */
   append: (content: string) => void;
   /** Stop current stream */
@@ -127,50 +147,52 @@ export function useAIChat(
 
   const costTracking = useAICost({ markup: config?.markup });
 
+  // Latest auth header and request options, read when each request is sent: the
+  // transport is created once, the user and config can change between renders.
+  const requestRef = useRef({ authorization: '', options: {} as object });
+  requestRef.current = {
+    authorization: user ? `Bearer ${(user as any).accessToken || ''}` : '',
+    options: {
+      provider: config?.provider,
+      model: config?.model,
+      maxTokens: config?.maxTokens,
+      temperature: config?.temperature,
+      systemPrompt: config?.systemPrompt,
+      tools: config?.tools,
+    },
+  };
+
+  const api = config?.api || '/api/ai/chat';
+  const transport = useMemo(
+    () =>
+      new DefaultChatTransport<ChatUIMessage>({
+        api,
+        prepareSendMessagesRequest: ({ messages: uiMessages }) => ({
+          headers: { Authorization: requestRef.current.authorization },
+          // Framework AIChatRequest: text messages only (tool-only turns carry no text).
+          body: {
+            ...requestRef.current.options,
+            messages: uiMessages
+              .map(toAIMessage)
+              .filter((m) => m.content.length > 0),
+          },
+        }),
+      }),
+    [api]
+  );
+
   const {
-    messages,
-    append: sdkAppend,
+    messages: uiMessages,
+    sendMessage,
     stop,
-    isLoading,
+    status,
     error,
     setMessages,
-    input,
-    setInput,
-    handleSubmit: sdkHandleSubmit,
-  } = useChat({
-    api: config?.api || '/api/ai/chat',
-    headers: useMemo(
-      () => ({
-        Authorization: user ? `Bearer ${(user as any).accessToken || ''}` : '',
-      }),
-      [user]
-    ),
-    body: useMemo(
-      () => ({
-        provider: config?.provider,
-        model: config?.model,
-        maxTokens: config?.maxTokens,
-        temperature: config?.temperature,
-        systemPrompt: config?.systemPrompt,
-        tools: config?.tools,
-      }),
-      [
-        config?.provider,
-        config?.model,
-        config?.maxTokens,
-        config?.temperature,
-        config?.systemPrompt,
-        config?.tools,
-      ]
-    ),
-    onFinish: (_message: any, options: { usage: any }) => {
-      if (options.usage) {
-        const usageData = {
-          promptTokens: options.usage.promptTokens,
-          completionTokens: options.usage.completionTokens,
-          totalTokens:
-            options.usage.promptTokens + options.usage.completionTokens,
-        };
+  } = useChat<ChatUIMessage>({
+    transport,
+    onFinish: ({ message }) => {
+      const usageData = message.metadata?.usage;
+      if (usageData) {
         costTracking.recordUsage(
           usageData,
           config?.model || 'claude-sonnet-4-20250514'
@@ -183,15 +205,19 @@ export function useAIChat(
     },
   });
 
+  const messages = useMemo(() => uiMessages.map(toAIMessage), [uiMessages]);
+  const isLoading = status === 'submitted' || status === 'streaming';
+  const [input, setInput] = useState('');
+
   const append = useCallback(
     (content: string) => {
       if (!isAvailable) {
         config?.onError?.(new Error(t('errors.not_available')));
         return;
       }
-      sdkAppend({ role: 'user', content });
+      void sendMessage({ text: content });
     },
-    [isAvailable, sdkAppend, config, t]
+    [isAvailable, sendMessage, config, t]
   );
 
   const clearMessages = useCallback(() => {
@@ -201,31 +227,47 @@ export function useAIChat(
 
   const handleSubmit = useCallback(
     (e?: React.FormEvent) => {
+      e?.preventDefault();
       if (!isAvailable) {
-        e?.preventDefault();
         config?.onError?.(new Error(t('errors.not_available')));
         return;
       }
-      sdkHandleSubmit(e);
+      const text = input.trim();
+      if (!text) return;
+      void sendMessage({ text });
+      setInput('');
     },
-    [isAvailable, sdkHandleSubmit, config, t]
+    [isAvailable, input, sendMessage, config, t]
   );
 
-  // Extract tool calls from the latest assistant message's toolInvocations
+  // Tool calls of the latest assistant message: static parts are `tool-<name>`,
+  // dynamic ones `dynamic-tool` (with toolName).
   const toolCalls: AIToolCall[] = useMemo(() => {
-    if (messages.length === 0) return [];
-    const lastMsg = messages[messages.length - 1];
+    const lastMsg = uiMessages[uiMessages.length - 1];
     if (!lastMsg || lastMsg.role !== 'assistant') return [];
 
-    const invocations = (lastMsg as any).toolInvocations;
-    if (!Array.isArray(invocations)) return [];
-
-    return invocations.map((inv: any) => ({
-      id: inv.toolCallId || inv.id || '',
-      name: inv.toolName || inv.name || '',
-      args: inv.args || {},
-    }));
-  }, [messages]);
+    return lastMsg.parts.flatMap((part): AIToolCall[] => {
+      if (part.type === 'dynamic-tool') {
+        return [
+          {
+            id: part.toolCallId,
+            name: part.toolName,
+            args: (part.input ?? {}) as Record<string, unknown>,
+          },
+        ];
+      }
+      if (part.type.startsWith('tool-') && 'toolCallId' in part) {
+        return [
+          {
+            id: part.toolCallId,
+            name: part.type.slice('tool-'.length),
+            args: (part.input ?? {}) as Record<string, unknown>,
+          },
+        ];
+      }
+      return [];
+    });
+  }, [uiMessages]);
 
   return {
     messages,

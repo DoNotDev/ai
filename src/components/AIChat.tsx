@@ -27,8 +27,8 @@ import type { AIUsage } from '@donotdev/core';
 import { useTranslation } from '@donotdev/core';
 
 import { useAI } from '../useAI';
-import type { UseAIChatConfig } from '../useAIChat';
 import { useAIAuth } from '../useAIAuth';
+import type { UseAIChatConfig } from '../useAIChat';
 import { AICostBadge } from './AICostBadge';
 
 export interface AIChatProps {

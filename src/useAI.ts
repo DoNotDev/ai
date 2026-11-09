@@ -20,7 +20,7 @@
  * @author AMBROISE PARK Consulting
  */
 
-import type { AIAPI, AIMessage } from '@donotdev/core';
+import type { AIAPI } from '@donotdev/core';
 import { DEGRADED_AI_API, isClient } from '@donotdev/core';
 
 import type { AIAuthState } from './useAIAuth';
@@ -62,8 +62,7 @@ export function useAI<K extends keyof AIAPI>(
   }
 
   const api: AIAPI = {
-    // Cast safe: we only use 'user' | 'assistant' | 'system' roles
-    messages: chatState.messages as AIMessage[],
+    messages: chatState.messages,
     append: chatState.append,
     stop: chatState.stop,
     isLoading: chatState.isLoading,
