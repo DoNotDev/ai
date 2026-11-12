@@ -11,10 +11,13 @@
  */
 
 import * as authModule from '@donotdev/auth';
-import type { AuthUser, FeatureStatus } from '@donotdev/core';
+import type { AuthAPI, AuthUser, FeatureStatus } from '@donotdev/core';
 import { FEATURE_STATUS } from '@donotdev/core';
 
-const realUseAuth = (authModule as any)?.useAuth;
+// why: @donotdev/auth is an optional peer — the bundler aliases it to an empty module when absent
+const realUseAuth = authModule?.useAuth as
+  | (<K extends keyof AuthAPI>(key: K) => AuthAPI[K])
+  | undefined;
 
 /** Auth state for AI feature */
 export interface AIAuthState {

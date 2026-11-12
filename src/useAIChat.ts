@@ -28,6 +28,7 @@ import type {
 import {
   FEATURE_STATUS,
   FRAMEWORK_FEATURES,
+  getProvider,
   isClient,
   useFeatureConsent,
   useTranslation,
@@ -147,11 +148,11 @@ export function useAIChat(
 
   const costTracking = useAICost({ markup: config?.markup });
 
-  // Latest auth header and request options, read when each request is sent: the
-  // transport is created once, the user and config can change between renders.
-  const requestRef = useRef({ authorization: '', options: {} as object });
+  // Latest request options and translator, read when each request is sent: the
+  // transport is created once, the config can change between renders.
+  const requestRef = useRef({ options: {} as object, t });
   requestRef.current = {
-    authorization: user ? `Bearer ${(user as any).accessToken || ''}` : '',
+    t,
     options: {
       provider: config?.provider,
       model: config?.model,
@@ -167,16 +168,23 @@ export function useAIChat(
     () =>
       new DefaultChatTransport<ChatUIMessage>({
         api,
-        prepareSendMessagesRequest: ({ messages: uiMessages }) => ({
-          headers: { Authorization: requestRef.current.authorization },
-          // Framework AIChatRequest: text messages only (tool-only turns carry no text).
-          body: {
-            ...requestRef.current.options,
-            messages: uiMessages
-              .map(toAIMessage)
-              .filter((m) => m.content.length > 0),
-          },
-        }),
+        // Token fetched per request so it is never stale (the provider refreshes it).
+        prepareSendMessagesRequest: async ({ messages: uiMessages }) => {
+          const token = await getProvider('auth').getAccessToken();
+          if (!token) {
+            throw new Error(requestRef.current.t('errors.unauthenticated'));
+          }
+          return {
+            headers: { Authorization: `Bearer ${token}` },
+            // Framework AIChatRequest: text messages only (tool-only turns carry no text).
+            body: {
+              ...requestRef.current.options,
+              messages: uiMessages
+                .map(toAIMessage)
+                .filter((m) => m.content.length > 0),
+            },
+          };
+        },
       }),
     [api]
   );
